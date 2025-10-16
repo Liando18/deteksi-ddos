@@ -12,19 +12,20 @@ import queue
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
-
+from messages.message import Message
+from datetime import datetime
 
 class HybridDDoSDetector:
-    def __init__(self, interface='enp0s8', model_path='model/ddos_model.pkl',
+    def __init__(self, interface='enp0s8', model_path='model/result/ddos_model.pkl',
                  iptables_enabled=True, blackhole_enabled=True):
         self.interface = interface
         self.model = joblib.load(model_path)
-        self.label_encoder = joblib.load('model/label_encoder.pkl')
+        self.label_encoder = joblib.load('model/result/label_encoder.pkl')
         self.thresholds = {'ICMP': 10, 'UDP': 100, 'TCP': 200, 'OTHER': 100}
         self.packet_queue = queue.Queue(maxsize=200000)
         self.state_memory = defaultdict(lambda: deque(maxlen=5))
         self.last_attack_time = defaultdict(float)
-        self.attack_hold_time = 5
+        self.attack_hold_time = 1
         self.blacklist = set()
         self.whitelist = {"10.10.18.1"}
 
@@ -43,12 +44,15 @@ class HybridDDoSDetector:
         print(Fore.CYAN + f"# blackhole_enabled = {self.blackhole_enabled}" + Style.RESET_ALL)
 
     def run(self):
-        print(f"{Fore.CYAN}# Starting hybrid DDoS detection on {self.interface}{Style.RESET_ALL}\n")
-        print(Fore.CYAN + f"# iptables_enabled={self.iptables_enabled}, blackhole_enabled={self.blackhole_enabled}" + Style.RESET_ALL)
+        print(f"{Fore.CYAN}# Starting DDoS detection on host {self.interface}{Style.RESET_ALL}\n")
+        if self.iptables_enabled == False and self.blackhole_enabled == False:
+            print(Fore.CYAN + f"# Block user access is turned off" + Style.RESET_ALL)
+            
         header = (
             f"{'Datetime':<20} | {'Source IP':<15} | {'Protocol':<9} | "
-            f"{'PktLen':>8} | {'PktRate':>8} | {'PktCount':>9} | {'IP TTL':>6} | {'Status':<12}"
+            f"{'Packet Length':>14} | {'Packet Rate':>12} | {'Packet Count':>13} | {'IP TTL':>6} | {'Status':<12} | {'Probability':>12}"
         )
+
         print(Fore.YELLOW + header + Style.RESET_ALL)
         print(Fore.YELLOW + "-" * len(header) + Style.RESET_ALL)
 
@@ -58,6 +62,7 @@ class HybridDDoSDetector:
             '-e', 'frame.len', '-e', 'ip.proto', '-e', 'ip.ttl',
             '-E', 'header=n', '-E', 'separator=|'
         ]
+        
         proc = subprocess.Popen(tshark_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
         try:
@@ -73,14 +78,9 @@ class HybridDDoSDetector:
             proc.terminate()
 
     def _sync_blacklist_worker(self, interval=5):
-        """Thread untuk sinkronisasi blacklist dari iptables setiap interval detik.
-        Jika iptables disabled, thread akan tidur dan membersihkan blacklist in-memory.
-        """
         while True:
             try:
                 if not self.iptables_enabled:
-                    if self.blacklist:
-                        print(Fore.YELLOW + "# iptables disabled -> membersihkan blacklist internal" + Style.RESET_ALL)
                     self.blacklist.clear()
                     time.sleep(interval)
                     continue
@@ -121,9 +121,6 @@ class HybridDDoSDetector:
             return False
 
     def _block_ip(self, ip):
-        """Tambahkan IP ke blacklist, block via iptables, dan tambahkan blackhole route (/32).
-        Operasi iptables/blackhole hanya dilakukan jika fitur terkait diaktifkan.
-        """
         if ip not in self.blacklist:
             self.blacklist.add(ip)
 
@@ -131,24 +128,22 @@ class HybridDDoSDetector:
                 try:
                     subprocess.run(["sudo", "iptables", "-I", "INPUT", "1", "-s", ip, "-j", "DROP"], check=False)
                     subprocess.run(["sudo", "iptables", "-I", "FORWARD", "1", "-s", ip, "-j", "DROP"], check=False)
-                    print(Fore.MAGENTA + f"# IP {ip} diblokir via iptables (INPUT & FORWARD)." + Style.RESET_ALL)
+                    print(Fore.MAGENTA + f"# IP {ip} diblokir" + Style.RESET_ALL)
                 except Exception as e:
                     print(Fore.RED + f"# Gagal menambahkan rule iptables untuk {ip}: {e}" + Style.RESET_ALL)
-            else:
-                print(Fore.YELLOW + f"# iptables disabled -> tidak menambahkan rule iptables untuk {ip}" + Style.RESET_ALL)
 
             if self.blackhole_enabled:
                 try:
                     subprocess.run(["sudo", "ip", "route", "add", "blackhole", f"{ip}/32"], check=False)
-                    print(Fore.MAGENTA + f"# Blackhole route ditambahkan untuk {ip}/32." + Style.RESET_ALL)
+                    # print(Fore.MAGENTA + f"# Blackhole route ditambahkan untuk {ip}/32." + Style.RESET_ALL)
                 except Exception as e:
                     print(Fore.RED + f"# Gagal tambah blackhole route untuk {ip}: {e}" + Style.RESET_ALL)
-            else:
-                print(Fore.YELLOW + f"# blackhole disabled -> tidak menambahkan blackhole route untuk {ip}" + Style.RESET_ALL)
 
     def _analyzer_worker(self):
         window_data = []
         last_flush = time.time()
+        WINDOW_SECONDS = 3.0
+
         while True:
             try:
                 line = self.packet_queue.get(timeout=0.1)
@@ -157,13 +152,13 @@ class HybridDDoSDetector:
                 pass
 
             now = time.time()
-            if now - last_flush >= 1.0:
+            if now - last_flush >= WINDOW_SECONDS:
                 if window_data:
-                    self._process_window(window_data, last_flush)
+                    self._process_window(window_data, last_flush, now)
                     window_data = []
                 last_flush = now
 
-    def _process_window(self, packets, window_time):
+    def _process_window(self, packets, window_start, window_end):
         counters = defaultdict(int)
         pkt_len_sum = defaultdict(int)
 
@@ -171,7 +166,15 @@ class HybridDDoSDetector:
             try:
                 fields = packet_data.split('|')
                 src_ip = fields[1] if len(fields) > 1 else ''
+                
+                if not src_ip.startswith('10.10.18.') or src_ip == '10.10.18.1':
+                    continue
+                
                 protocol = fields[2].split()[0] if len(fields) > 2 and fields[2] else 'OTHER'
+                
+                if protocol not in ['ICMP', 'TCP', 'UDP']:
+                    continue
+                
                 if not src_ip or src_ip in self.blacklist or src_ip in self.whitelist:
                     continue
                 pkt_len = int(fields[3]) if len(fields) > 3 and fields[3] else 0
@@ -185,26 +188,28 @@ class HybridDDoSDetector:
                 pkt_len_sum[(src_ip, protocol)] += pkt_len
             except Exception:
                 continue
+        
+        window_duration = max(window_end - window_start, 1e-6)
 
         for (src_ip, protocol), count in counters.items():
-            rate = count
-            threshold = self.thresholds.get(protocol, self.thresholds['OTHER'])
+            pkt_rate = count / window_duration
             avg_len = pkt_len_sum[(src_ip, protocol)] // count if count > 0 else 0
-
+            protocol_mapping = {'ICMP': 0, 'TCP': 1, 'UDP': 2}
+    
             data = {
-                'protocol_ICMP': 1 if protocol == 'ICMP' else 0,
-                'protocol_TCP': 1 if protocol == 'TCP' else 0,
-                'protocol_UDP': 1 if protocol == 'UDP' else 0,
-                'pkt_len': avg_len,
-                'pkt_rate': min(rate, 1000000),
+                'protocol': protocol_mapping.get(protocol, 3),
+                'pkt_length': avg_len,
+                'pkt_rate': pkt_rate,
                 'pkt_count': count,
                 'ip_ttl': ttl
             }
 
             try:
-                df = pd.DataFrame([data])[self.model.feature_names_in_]
+                df = pd.DataFrame([data]).reindex(columns=self.model.feature_names_in_, fill_value=0)
             except Exception as e:
-                print(Fore.RED + f"# Feature mismatch: {e}" + Style.RESET_ALL)
+                print(Fore.RED + f"# Feature mismatch saat reindex: {e}" + Style.RESET_ALL)
+                print(Fore.RED + f"# model.features: {list(self.model.feature_names_in_)}" + Style.RESET_ALL)
+                print(Fore.RED + f"# data.keys: {list(data.keys())}" + Style.RESET_ALL)
                 continue
 
             ml_pred = self.model.predict(df)
@@ -218,28 +223,104 @@ class HybridDDoSDetector:
                 "Attack": "DDOS-Attack",
                 "Normal": "Normal",
                 "normal": "Normal",
-                "1": "Normal",
-                "0": "DDOS-Attack"
+                1: "Normal",
+                0: "DDOS-Attack"
             }
             ml_label = label_map.get(ml_label_raw, "Normal")
 
-            threshold_label = "Normal"
-            if count > threshold or (protocol == "ICMP" and rate > 1000) or (protocol == "UDP" and rate > 500):
-                threshold_label = "DDOS-Attack"
-
-            # Final decision
-            final_label = ml_label
-            if ml_label == "DDOS-Attack" and threshold_label == "Normal":
-                if ml_prob < 0.7:
+            final_label = ml_label 
+            if final_label == "DDOS-Attack":
+                is_low_traffic = pkt_rate < 500 and count < 25005
+                
+                if is_low_traffic:
                     final_label = "Normal"
-            elif threshold_label == "DDOS-Attack" and ml_label == "Normal":
-                final_label = "DDOS-Attack"
 
             key = (src_ip, protocol)
             self.state_memory[key].append(final_label)
             if list(self.state_memory[key]).count("DDOS-Attack") >= 3:
                 self._block_ip(src_ip)
                 final_label = "DDOS-Attack"
+                try:
+                    waktu_serangan = datetime.now().strftime("%d %B %Y %H:%M:%S")
+
+                    wa_targets = [
+                        "6285835524290",
+                    ]
+
+                    email_receivers = [
+                        "liando1804@gmail.com",
+                    ]
+
+                    wa_message = (
+                        f"🚨 *PERINGATAN SERANGAN DDOS TERDETEKSI* 🚨\n\n"
+                        f"📍 *Server Rumah Sakit Umum Daerah Tapan*\n"
+                        f"🕒 *Waktu Serangan:* {waktu_serangan}\n"
+                        f"🌐 *IP Penyerang:* {src_ip}\n"
+                        f"📡 *Protokol:* {protocol}\n"
+                        f"📦 *Rata-rata Paket:* {avg_len}\n"
+                        f"⚙️ *Tingkat Lalu Lintas:* {pkt_rate}\n"
+                        f"📊 *Jumlah Paket:* {count}\n"
+                        f"🔁 *IP TTL:* {ttl}\n\n"
+                        f"🛑 IP {src_ip} telah *diblokir otomatis* untuk menjaga kestabilan jaringan RSUD Tapan.\n"
+                        f"Terima kasih.\n\n"
+                        f"— Sistem Hybrid AI Detector"
+                    )
+
+                    for target in wa_targets:
+                        Message(target, wa_message).send_via_whatsapp()
+                        print(Fore.GREEN + f"# WhatsApp dikirim ke {target}" + Style.RESET_ALL)
+
+                    subject = "🚨 Peringatan Serangan DDoS di Server RSUD Tapan"
+                    email_body = f"""
+                    <html>
+                    <body style="font-family: 'Segoe UI', Arial, sans-serif; background-color: #f4f6f8; padding: 30px;">
+
+                        <div style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
+                            <div style="text-align: center; margin-bottom: 20px;">
+                                <div style="background-color: #d9534f; color: white; display: inline-block; padding: 10px 20px; border-radius: 8px; font-size: 18px; font-weight: bold;">
+                                    🚨 Peringatan Serangan DDoS
+                                </div>
+                            </div>
+
+                            <p style="font-size: 15px; color: #333333; text-align: justify;">
+                                Telah terdeteksi aktivitas mencurigakan pada sistem jaringan 
+                                <b>Rumah Sakit Umum Daerah Tapan</b>. Berikut detail hasil analisis otomatis sistem:
+                            </p>
+
+                            <div style="background-color: #f9f9f9; border-left: 5px solid #d9534f; padding: 15px 20px; border-radius: 8px; margin-top: 15px;">
+                                <p style="margin: 6px 0;"><b>🕒 Waktu Deteksi:</b> {waktu_serangan}</p>
+                                <p style="margin: 6px 0;"><b>🌐 IP Penyerang:</b> {src_ip}</p>
+                                <p style="margin: 6px 0;"><b>📡 Protokol:</b> {protocol}</p>
+                                <p style="margin: 6px 0;"><b>📦 Rata-rata Panjang Paket:</b> {avg_len}</p>
+                                <p style="margin: 6px 0;"><b>⚙️ Tingkat Lalu Lintas:</b> {pkt_rate:.0f}</p>
+                                <p style="margin: 6px 0;"><b>📊 Jumlah Paket:</b> {count}</p>
+                                <p style="margin: 6px 0;"><b>🔁 IP TTL:</b> {ttl}</p>
+                            </div>
+
+                            <div style="margin-top: 25px; background-color: #fff3f3; border: 1px solid #f5c6cb; padding: 15px 20px; border-radius: 8px;">
+                                <p style="margin: 0; font-size: 15px; color: #b71c1c;">
+                                    ⚠️ IP <b>{src_ip}</b> telah <b>diblokir otomatis</b> oleh sistem AI untuk mencegah gangguan pada layanan jaringan.
+                                </p>
+                            </div>
+
+                            <div style="margin-top: 30px; text-align: center; color: #555555; font-size: 14px;">
+                                <p style="margin: 0;"><i>— Sistem Hybrid AI Detector</i></p>
+                                <p style="margin: 0;"><i>Rumah Sakit Umum Daerah Tapan</i></p>
+                            </div>
+                        </div>
+
+                    </body>
+                    </html>
+                    """
+
+                    for receiver in email_receivers:
+                        Message(receiver, email_body, subject).send_via_email()
+                        print(Fore.YELLOW + f"# Email dikirim ke {receiver}" + Style.RESET_ALL)
+
+                    print(Fore.CYAN + f"# Notifikasi berhasil dikirim ke WhatsApp & Email." + Style.RESET_ALL)
+
+                except Exception as e:
+                    print(Fore.RED + f"# Gagal mengirim notifikasi: {e}" + Style.RESET_ALL)
 
             now = time.time()
             if final_label == "DDOS-Attack":
@@ -249,12 +330,20 @@ class HybridDDoSDetector:
                     final_label = "DDOS-Attack"
 
             label_color = Fore.GREEN if final_label == "Normal" else Fore.RED
-            dt_str = datetime.fromtimestamp(window_time).strftime("%Y-%m-%d %H:%M:%S")
+            dt_str = datetime.fromtimestamp(window_end).strftime("%Y-%m-%d %H:%M:%S")
+
+            prob_percent = ml_prob * 100
+
+            if prob_percent.is_integer():
+                prob_str = f"{int(prob_percent)}%"
+            else:
+                prob_str = f"{prob_percent:.2f}%"
 
             print(
-                f"{dt_str:<20} | {src_ip:<15} | {protocol:<9} | {avg_len:>8} | "
-                f"{rate:>8} | {count:>9} | {ttl:>6} | {label_color}{final_label:<12}{Style.RESET_ALL}"
+                f"{dt_str:<20} | {src_ip:<15} | {protocol:<9} | {avg_len:>14} | "
+                f"{pkt_rate:>12.0f} | {count:>13} | {ttl:>6} | {label_color}{final_label:<12}{Style.RESET_ALL} | {prob_str:>12}"
             )
+            
             sys.stdout.flush()
 
     def _get_proto_name(self, proto_num):
@@ -262,63 +351,10 @@ class HybridDDoSDetector:
         return proto_map.get(proto_num, f"PROTO_{proto_num}")
 
 
-class UnblockHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path == "/unblock":
-            length = int(self.headers.get('content-length', 0))
-            body = self.rfile.read(length)
-            try:
-                data = json.loads(body.decode())
-            except Exception:
-                self._send_response(400, {"status": "error", "message": "invalid json"})
-                return
-
-            ip = data.get("src_ip")
-            if ip:
-                try:
-                    if detector.iptables_enabled:
-                        subprocess.run(["sudo", "iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"], check=False)
-                        subprocess.run(["sudo", "iptables", "-D", "FORWARD", "-s", ip, "-j", "DROP"], check=False)
-                    else:
-                        print(Fore.YELLOW + f"# iptables disabled -> tidak menghapus rule iptables untuk {ip}" + Style.RESET_ALL)
-
-                    if detector.blackhole_enabled:
-                        subprocess.run(["sudo", "ip", "route", "del", "blackhole", f"{ip}/32"], check=False)
-                    else:
-                        print(Fore.YELLOW + f"# blackhole disabled -> tidak menghapus blackhole route untuk {ip}" + Style.RESET_ALL)
-
-                    if ip in detector.blacklist:
-                        detector.blacklist.remove(ip)
-                    keys_to_delete = [k for k in list(detector.state_memory.keys()) if k[0] == ip]
-                    for k in keys_to_delete:
-                        del detector.state_memory[k]
-                    keys_to_reset = [k for k in list(detector.last_attack_time.keys()) if k[0] == ip]
-                    for k in keys_to_reset:
-                        del detector.last_attack_time[k]
-                    self._send_response(200, {"status": "success", "message": f"{ip} unblocked"})
-                    print(Fore.GREEN + f"# IP {ip} berhasil di-unblock dari server (fitur sesuai setting)." + Style.RESET_ALL)
-                except Exception as e:
-                    self._send_response(500, {"status": "error", "message": str(e)})
-            else:
-                self._send_response(400, {"status": "error", "message": "src_ip required"})
-
-    def _send_response(self, code, data):
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
-
-
-def start_unblock_server(port=6000):
-    server = HTTPServer(("0.0.0.0", port), UnblockHandler)
-    print(Fore.CYAN + f"# Unblock server running on port {port}" + Style.RESET_ALL)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Hybrid DDoS Detector")
     parser.add_argument('--interface', '-i', default='enp0s8', help='Network interface to listen on')
-    parser.add_argument('--model', '-m', default='model/ddos_model.pkl', help='Path to ML model')
+    parser.add_argument('--model', '-m', default='model/result/ddos_model.pkl', help='Path to ML model')
     parser.add_argument('--no-iptables', action='store_true', help='Disable iptables blocking')
     parser.add_argument('--no-blackhole', action='store_true', help='Disable blackhole route')
     parser.add_argument('--port', '-p', type=int, default=6001, help='Unblock server port')
@@ -331,5 +367,4 @@ if __name__ == '__main__':
 
     detector = HybridDDoSDetector(interface=interface, model_path=model_path,
                                   iptables_enabled=iptables_enabled, blackhole_enabled=blackhole_enabled)
-    start_unblock_server(port=args.port)
     detector.run()
