@@ -177,8 +177,7 @@ class HybridDDoSDetector:
         print(Fore.CYAN + f"# blackhole_enabled = {self.blackhole_enabled}" + Style.RESET_ALL)
 
     def run(self):
-        print(f"{Fore.CYAN}# Starting hybrid DDoS detection (TZSP) on {self.interface}{Style.RESET_ALL}\n")
-        print(Fore.CYAN + f"# iptables_enabled={self.iptables_enabled}, blackhole_enabled={self.blackhole_enabled}, mikrotik_enabled={self.mikrotik_enabled}" + Style.RESET_ALL)
+        print(f"{Fore.CYAN}# Starting hybrid DDoS detection on {self.interface}{Style.RESET_ALL}\n")
         header = (
             f"{'Datetime':<20} | {'Source IP':<15} | {'Protocol':<9} | "
             f"{'Packet Length':>14} | {'Packet Rate':>12} | {'Packet Count':>13} | {'IP TTL':>6} | {'Status':<12} | {'Probability':>12}"
@@ -411,7 +410,7 @@ class HybridDDoSDetector:
 
             final_label = ml_label 
             if final_label == "DDOS-Attack":
-                is_low_traffic = rate < 500 and count < 1000
+                is_low_traffic = rate < 250 and count < 800
                 
                 if is_low_traffic:
                     final_label = "Normal"
@@ -454,7 +453,7 @@ class HybridDDoSDetector:
 
                         for target in wa_targets:
                             Message(target, wa_message).send_via_whatsapp()
-                            # print(Fore.GREEN + f"# WhatsApp dikirim ke {target}" + Style.RESET_ALL)
+                            print(Fore.GREEN + f"# Pesan WhatsApp Dikirim" + Style.RESET_ALL)
 
                         subject = f"🚨 Peringatan Serangan DDoS di {router_name}"
 
@@ -501,7 +500,7 @@ class HybridDDoSDetector:
 
                         for receiver in email_receivers:
                             Message(receiver, email_body, subject).send_via_email()
-                            # print(Fore.YELLOW + f"# Email dikirim ke {receiver}" + Style.RESET_ALL)
+                            print(Fore.YELLOW + f"# Pesan Email Dikirim" + Style.RESET_ALL)
 
                         print(Fore.CYAN + f"# Notifikasi berhasil dikirim ke WhatsApp & Email." + Style.RESET_ALL)
 

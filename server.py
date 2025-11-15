@@ -268,7 +268,7 @@ class HybridDDoSDetector:
 
                     for target in wa_targets:
                         Message(target, wa_message).send_via_whatsapp()
-                        print(Fore.GREEN + f"# WhatsApp dikirim ke {target}" + Style.RESET_ALL)
+                        print(Fore.GREEN + f"# Pesan WhatsApp Dikirim" + Style.RESET_ALL)
 
                     subject = "🚨 Peringatan Serangan DDoS di Server RSUD Tapan"
                     email_body = f"""
@@ -315,7 +315,7 @@ class HybridDDoSDetector:
 
                     for receiver in email_receivers:
                         Message(receiver, email_body, subject).send_via_email()
-                        print(Fore.YELLOW + f"# Email dikirim ke {receiver}" + Style.RESET_ALL)
+                        print(Fore.YELLOW + f"# Pesan Email Dikirim" + Style.RESET_ALL)
 
                     print(Fore.CYAN + f"# Notifikasi berhasil dikirim ke WhatsApp & Email." + Style.RESET_ALL)
 
