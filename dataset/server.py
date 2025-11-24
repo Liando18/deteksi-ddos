@@ -1,8 +1,3 @@
-import sys
-sys.path.append("model")
-
-from nb import NaiveBayesGaussian
-
 import subprocess
 import sys
 import argparse
@@ -20,13 +15,12 @@ import json
 from messages.message import Message
 from datetime import datetime
 
-
 class HybridDDoSDetector:
-    def __init__(self, interface='enp0s8', model_path='model/result/model/ddos_model.pkl',
+    def __init__(self, interface='enp0s8', model_path='model/result/ddos_model.pkl',
                  iptables_enabled=True, blackhole_enabled=True):
         self.interface = interface
         self.model = joblib.load(model_path)
-        self.label_encoder = joblib.load('model/result/model/label_encoder.pkl')
+        self.label_encoder = joblib.load('model/result/label_encoder.pkl')
         self.thresholds = {'ICMP': 10, 'UDP': 100, 'TCP': 200, 'OTHER': 100}
         self.packet_queue = queue.Queue(maxsize=200000)
         self.state_memory = defaultdict(lambda: deque(maxlen=5))
@@ -244,9 +238,11 @@ class HybridDDoSDetector:
             key = (src_ip, protocol)
             self.state_memory[key].append(final_label)
             if list(self.state_memory[key]).count("DDOS-Attack") >= 3:
-                waktu_serangan = datetime.now().strftime("%d %B %Y %H:%M:%S")
-                
+                self._block_ip(src_ip)
+                final_label = "DDOS-Attack"
                 try:
+                    waktu_serangan = datetime.now().strftime("%d %B %Y %H:%M:%S")
+
                     wa_targets = [
                         "6285835524290",
                     ]
@@ -265,6 +261,8 @@ class HybridDDoSDetector:
                         f"⚙️ *Tingkat Lalu Lintas:* {pkt_rate}\n"
                         f"📊 *Jumlah Paket:* {count}\n"
                         f"🔁 *IP TTL:* {ttl}\n\n"
+                        f"🛑 IP {src_ip} telah *diblokir otomatis* untuk menjaga kestabilan jaringan RSUD Tapan.\n"
+                        f"Terima kasih.\n\n"
                         f"— Sistem Hybrid AI Detector"
                     )
 
@@ -299,6 +297,12 @@ class HybridDDoSDetector:
                                 <p style="margin: 6px 0;"><b>🔁 IP TTL:</b> {ttl}</p>
                             </div>
 
+                            <div style="margin-top: 25px; background-color: #fff3f3; border: 1px solid #f5c6cb; padding: 15px 20px; border-radius: 8px;">
+                                <p style="margin: 0; font-size: 15px; color: #b71c1c;">
+                                    ⚠️ IP <b>{src_ip}</b> telah <b>diblokir otomatis</b> oleh sistem AI untuk mencegah gangguan pada layanan jaringan.
+                                </p>
+                            </div>
+
                             <div style="margin-top: 30px; text-align: center; color: #555555; font-size: 14px;">
                                 <p style="margin: 0;"><i>— Sistem Hybrid AI Detector</i></p>
                                 <p style="margin: 0;"><i>Rumah Sakit Umum Daerah Tapan</i></p>
@@ -317,87 +321,6 @@ class HybridDDoSDetector:
 
                 except Exception as e:
                     print(Fore.RED + f"# Gagal mengirim notifikasi: {e}" + Style.RESET_ALL)
-
-                try:
-                    wa_block_message = (
-                        f"🔒 *NOTIFIKASI PEMBLOKIRAN AKSES PENGGUNA* 🔒\n\n"
-                        f"📍 *Server Rumah Sakit Umum Daerah Tapan*\n"
-                        f"🕒 *Waktu Pemblokiran:* {waktu_serangan}\n"
-                        f"🌐 *IP yang Diblokir:* {src_ip}\n"
-                        f"📡 *Protokol Serangan:* {protocol}\n\n"
-                        f"✅ *Status:* Akses telah berhasil diblokir\n\n"
-                        f"ℹ️ *Informasi Tambahan:*\n"
-                        f"• Metode Blocking: iptables & Blackhole Route\n"
-                        f"• Alasan: Serangan DDoS terdeteksi dan dikonfirmasi (3x deteksi)\n"
-                        f"• Paket Serangan: {count} paket\n"
-                        f"• Tingkat Lalu Lintas: {pkt_rate:.0f} pps\n\n"
-                        f"Sistem akan terus memantau jaringan untuk keamanan maksimal.\n\n"
-                        f"— Sistem Hybrid AI Detector"
-                    )
-
-                    block_email_body = f"""
-                    <html>
-                    <body style="font-family: 'Segoe UI', Arial, sans-serif; background-color: #f4f6f8; padding: 30px;">
-
-                        <div style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
-                            <div style="text-align: center; margin-bottom: 20px;">
-                                <div style="background-color: #5cb85c; color: white; display: inline-block; padding: 10px 20px; border-radius: 8px; font-size: 18px; font-weight: bold;">
-                                    🔒 Notifikasi Pemblokiran Akses
-                                </div>
-                            </div>
-
-                            <p style="font-size: 15px; color: #333333; text-align: justify;">
-                                Sistem telah berhasil memblokir akses dari IP yang melakukan serangan DDoS. 
-                                Berikut ringkasan aksi keamanan yang telah dilakukan:
-                            </p>
-
-                            <div style="background-color: #f0f8f0; border-left: 5px solid #5cb85c; padding: 15px 20px; border-radius: 8px; margin-top: 15px;">
-                                <p style="margin: 6px 0;"><b>🕒 Waktu Pemblokiran:</b> {waktu_serangan}</p>
-                                <p style="margin: 6px 0;"><b>🌐 IP yang Diblokir:</b> <span style="font-family: monospace; background-color: #f0f0f0; padding: 2px 6px;">{src_ip}</span></p>
-                                <p style="margin: 6px 0;"><b>📡 Protokol Serangan:</b> {protocol}</p>
-                                <p style="margin: 6px 0;"><b>📊 Total Paket Serangan:</b> {count} paket</p>
-                                <p style="margin: 6px 0;"><b>⚙️ Laju Paket:</b> {pkt_rate:.0f} pps (paket per detik)</p>
-                            </div>
-
-                            <div style="margin-top: 20px; background-color: #f9f9f9; border: 1px solid #ddd; padding: 15px 20px; border-radius: 8px;">
-                                <p style="margin: 0; font-size: 14px; color: #555;"><b>📌 Metode Pemblokiran yang Digunakan:</b></p>
-                                <ul style="margin: 10px 0; padding-left: 20px;">
-                                    <li>iptables DROP rule (INPUT & FORWARD)</li>
-                                    <li>Blackhole Routing</li>
-                                </ul>
-                            </div>
-
-                            <div style="margin-top: 25px; background-color: #e8f5e9; border: 1px solid #c8e6c9; padding: 15px 20px; border-radius: 8px;">
-                                <p style="margin: 0; font-size: 15px; color: #2e7d32;">
-                                    ✅ Akses telah <b>berhasil diblokir</b> dan jaringan RSUD Tapan terlindungi dari ancaman ini.
-                                </p>
-                            </div>
-
-                            <div style="margin-top: 30px; text-align: center; color: #555555; font-size: 14px;">
-                                <p style="margin: 0;"><i>— Sistem Hybrid AI Detector</i></p>
-                                <p style="margin: 0;"><i>Rumah Sakit Umum Daerah Tapan</i></p>
-                            </div>
-                        </div>
-
-                    </body>
-                    </html>
-                    """
-
-                    for target in wa_targets:
-                        Message(target, wa_block_message).send_via_whatsapp()
-                        print(Fore.GREEN + f"# Notifikasi Pemblokiran WhatsApp Dikirim" + Style.RESET_ALL)
-
-                    for receiver in email_receivers:
-                        Message(receiver, block_email_body, "🔒 Notifikasi Pemblokiran Akses Pengguna - RSUD Tapan").send_via_email()
-                        print(Fore.YELLOW + f"# Notifikasi Pemblokiran Email Dikirim" + Style.RESET_ALL)
-
-                    print(Fore.CYAN + f"# Notifikasi pemblokiran berhasil dikirim." + Style.RESET_ALL)
-
-                except Exception as e:
-                    print(Fore.RED + f"# Gagal mengirim notifikasi pemblokiran: {e}" + Style.RESET_ALL)
-
-                self._block_ip(src_ip)
-                final_label = "DDOS-Attack"
 
             now = time.time()
             if final_label == "DDOS-Attack":
@@ -431,7 +354,7 @@ class HybridDDoSDetector:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Hybrid DDoS Detector")
     parser.add_argument('--interface', '-i', default='enp0s8', help='Network interface to listen on')
-    parser.add_argument('--model', '-m', default='model/result/model/ddos_model.pkl', help='Path to ML model')
+    parser.add_argument('--model', '-m', default='model/result/ddos_model.pkl', help='Path to ML model')
     parser.add_argument('--no-iptables', action='store_true', help='Disable iptables blocking')
     parser.add_argument('--no-blackhole', action='store_true', help='Disable blackhole route')
     parser.add_argument('--port', '-p', type=int, default=6001, help='Unblock server port')

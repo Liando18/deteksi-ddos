@@ -1,9 +1,5 @@
-import sys
-sys.path.append("model")
-
-from nb import NaiveBayesGaussian
-
 import subprocess
+import sys
 import argparse
 from collections import defaultdict, deque
 import time
@@ -27,14 +23,14 @@ except Exception:
     RouterOsApiPool = None
 
 class HybridDDoSDetector:
-    def __init__(self, interface='any', model_path='model/result/model/ddos_model.pkl',
+    def __init__(self, interface='any', model_path='model/result/ddos_model.pkl',
                  iptables_enabled=True, blackhole_enabled=True,
                  mikrotik_enabled=False, mt_host=None, mt_user=None, mt_pass=None, mt_port=8728):
         self.interface = interface
 
         try:
             self.model = joblib.load(model_path)
-            self.label_encoder = joblib.load('model/result/model/label_encoder.pkl')
+            self.label_encoder = joblib.load('model/result/label_encoder.pkl')
         except Exception as e:
             print(Fore.RED + f"# Gagal load model/encoder: {e}" + Style.RESET_ALL)
             self.model = None
@@ -101,6 +97,7 @@ class HybridDDoSDetector:
                 continue
 
         return parts[-1] if parts else ''
+
 
     def _choose_proto_from_field(self, proto_field: str):
         if not proto_field:
@@ -284,37 +281,37 @@ class HybridDDoSDetector:
         if ip not in self.blacklist:
             self.blacklist.add(ip)
             try:
-                al = self._mt_api.get_resource('/ip/firewall/address-list')
-                exists = False
-                for it in al.get():
-                    if it.get('list') == 'blacklist' and it.get('address') == ip:
-                        exists = True
-                        break
-                if not exists:
-                    al.add(list='blacklist', address=ip, comment='Auto-blocked by detector')
+                    al = self._mt_api.get_resource('/ip/firewall/address-list')
+                    exists = False
+                    for it in al.get():
+                        if it.get('list') == 'blacklist' and it.get('address') == ip:
+                            exists = True
+                            break
+                    if not exists:
+                        al.add(list='blacklist', address=ip, comment='Auto-blocked by detector')
 
-                fw = self._mt_api.get_resource('/ip/firewall/filter')
-                rules = fw.get()
-                def has_rule(match):
-                    for r in rules:
-                        if r.get('chain') == match.get('chain') and r.get('action') == match.get('action'):
-                            if match.get('src-address') and r.get('src-address') == match.get('src-address'):
-                                return True
-                            if match.get('dst-address') and r.get('dst-address') == match.get('dst-address'):
-                                return True
-                    return False
+                    fw = self._mt_api.get_resource('/ip/firewall/filter')
+                    rules = fw.get()
+                    def has_rule(match):
+                        for r in rules:
+                            if r.get('chain') == match.get('chain') and r.get('action') == match.get('action'):
+                                if match.get('src-address') and r.get('src-address') == match.get('src-address'):
+                                    return True
+                                if match.get('dst-address') and r.get('dst-address') == match.get('dst-address'):
+                                    return True
+                        return False
 
-                input_rule = {'chain':'input', 'src-address':ip, 'action':'drop', 'comment':'auto-block-input'}
-                forward_rule = {'chain':'forward', 'src-address':ip, 'action':'drop', 'comment':'auto-block-forward'}
+                    input_rule = {'chain':'input', 'src-address':ip, 'action':'drop', 'comment':'auto-block-input'}
+                    forward_rule = {'chain':'forward', 'src-address':ip, 'action':'drop', 'comment':'auto-block-forward'}
 
-                if not has_rule(input_rule): 
-                    fw.add(**input_rule)
-                if not has_rule(forward_rule):
-                    fw.add(**forward_rule)
+                    if not has_rule(input_rule): 
+                        fw.add(**input_rule)
+                    if not has_rule(forward_rule):
+                        fw.add(**forward_rule)
 
-                print(Fore.MAGENTA + f"# IP {ip} diblokir via MikroTik." + Style.RESET_ALL)
+                    print(Fore.MAGENTA + f"# IP {ip} diblokir via MikroTik." + Style.RESET_ALL)
             except Exception as e:
-                print(Fore.RED + f"# Gagal block via MikroTik: {e}" + Style.RESET_ALL)
+                    print(Fore.RED + f"# Gagal block via MikroTik: {e}" + Style.RESET_ALL)
 
     def _analyzer_worker(self):
         window_data = []
@@ -423,168 +420,92 @@ class HybridDDoSDetector:
             key = (src_ip, protocol)
             self.state_memory[key].append(final_label)
             if list(self.state_memory[key]).count("DDOS-Attack") >= 3:
-                waktu_serangan = datetime.now().strftime("%d %B %Y %H:%M:%S")
-
-                try:
-                    wa_targets = [
-                        "6285835524290",
-                    ]
-
-                    email_receivers = [
-                        "liando1804@gmail.com",
-                    ]
-
-                    router_ip = self.mt_host or ""
-                    router_name = "Router MikroTik RSUD Tapan"
-
-                    wa_message = (
-                        f"🚨 *PERINGATAN SERANGAN DDOS TERDETEKSI* 🚨\n\n"
-                        f"🏥 *{router_name} ({router_ip})*\n"
-                        f"🕒 *Waktu Serangan:* {waktu_serangan}\n"
-                        f"🌐 *IP Penyerang:* {src_ip}\n"
-                        f"📡 *Protokol:* {protocol}\n"
-                        f"📦 *Rata-rata Paket:* {avg_len}\n"
-                        f"⚙️ *Tingkat Lalu Lintas:* {rate:.0f}\n"
-                        f"📊 *Jumlah Paket:* {count}\n"
-                        f"🔁 *IP TTL:* {ttl}\n\n"
-                        f"— Sistem Hybrid AI Detector"
-                    )
-
-                    for target in wa_targets:
-                        Message(target, wa_message).send_via_whatsapp()
-                        print(Fore.GREEN + f"# Pesan WhatsApp Dikirim" + Style.RESET_ALL)
-
-                    subject = f"🚨 Peringatan Serangan DDoS di {router_name}"
-
-                    email_body = f"""
-                    <html>
-                    <body style="font-family: 'Segoe UI', Arial, sans-serif; background-color: #f4f6f8; padding: 30px;">
-                        <div style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
-                            <div style="text-align: center; margin-bottom: 20px;">
-                                <div style="background-color: #d9534f; color: white; display: inline-block; padding: 10px 20px; border-radius: 8px; font-size: 18px; font-weight: bold;">
-                                    🚨 Peringatan Serangan DDoS
-                                </div>
-                            </div>
-
-                            <p style="font-size: 15px; color: #333333; text-align: justify;">
-                                Telah terdeteksi aktivitas mencurigakan pada sistem jaringan 
-                                <b>{router_name}</b> dengan IP <b>{router_ip}</b>.
-                                Berikut detail hasil analisis otomatis sistem:
-                            </p>
-
-                            <div style="background-color: #f9f9f9; border-left: 5px solid #d9534f; padding: 15px 20px; border-radius: 8px; margin-top: 15px;">
-                                <p style="margin: 6px 0;"><b>🕒 Waktu Deteksi:</b> {waktu_serangan}</p>
-                                <p style="margin: 6px 0;"><b>🌐 IP Penyerang:</b> {src_ip}</p>
-                                <p style="margin: 6px 0;"><b>📡 Protokol:</b> {protocol}</p>
-                                <p style="margin: 6px 0;"><b>📦 Rata-rata Panjang Paket:</b> {avg_len}</p>
-                                <p style="margin: 6px 0;"><b>⚙️ Tingkat Lalu Lintas:</b> {rate:.0f}</p>
-                                <p style="margin: 6px 0;"><b>📊 Jumlah Paket:</b> {count}</p>
-                                <p style="margin: 6px 0;"><b>🔁 IP TTL:</b> {ttl}</p>
-                            </div>
-
-                            <div style="margin-top: 30px; text-align: center; color: #555555; font-size: 14px;">
-                                <p style="margin: 0;"><i>— Sistem Hybrid AI Detector</i></p>
-                                <p style="margin: 0;"><i>{router_name}</i></p>
-                            </div>
-                        </div>
-                    </body>
-                    </html>
-                    """
-
-                    for receiver in email_receivers:
-                        Message(receiver, email_body, subject).send_via_email()
-                        print(Fore.YELLOW + f"# Pesan Email Dikirim" + Style.RESET_ALL)
-
-                    print(Fore.CYAN + f"# Notifikasi berhasil dikirim ke WhatsApp & Email." + Style.RESET_ALL)
-
-                except Exception as e:
-                    print(Fore.RED + f"# Gagal mengirim notifikasi: {e}" + Style.RESET_ALL)
-
-                try:
-                    wa_block_message = (
-                        f"🔒 *NOTIFIKASI PEMBLOKIRAN AKSES PENGGUNA* 🔒\n\n"
-                        f"🏥 *{router_name} ({router_ip})*\n"
-                        f"🕒 *Waktu Pemblokiran:* {waktu_serangan}\n"
-                        f"🌐 *IP yang Diblokir:* {src_ip}\n"
-                        f"📡 *Protokol Serangan:* {protocol}\n\n"
-                        f"✅ *Status:* Akses telah berhasil diblokir\n\n"
-                        f"ℹ️ *Informasi Tambahan:*\n"
-                        f"• Metode Blocking: MikroTik Address List & Firewall Rules\n"
-                        f"• Alasan: Serangan DDoS terdeteksi dan dikonfirmasi (3x deteksi)\n"
-                        f"• Paket Serangan: {count} paket\n"
-                        f"• Tingkat Lalu Lintas: {rate:.0f} pps\n\n"
-                        f"Sistem akan terus memantau jaringan untuk keamanan maksimal.\n\n"
-                        f"— Sistem Hybrid AI Detector"
-                    )
-
-                    block_email_body = f"""
-                    <html>
-                    <body style="font-family: 'Segoe UI', Arial, sans-serif; background-color: #f4f6f8; padding: 30px;">
-
-                        <div style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
-                            <div style="text-align: center; margin-bottom: 20px;">
-                                <div style="background-color: #5cb85c; color: white; display: inline-block; padding: 10px 20px; border-radius: 8px; font-size: 18px; font-weight: bold;">
-                                    🔒 Notifikasi Pemblokiran Akses
-                                </div>
-                            </div>
-
-                            <p style="font-size: 15px; color: #333333; text-align: justify;">
-                                Sistem telah berhasil memblokir akses dari IP yang melakukan serangan DDoS pada 
-                                <b>{router_name}</b>. Berikut ringkasan aksi keamanan yang telah dilakukan:
-                            </p>
-
-                            <div style="background-color: #f0f8f0; border-left: 5px solid #5cb85c; padding: 15px 20px; border-radius: 8px; margin-top: 15px;">
-                                <p style="margin: 6px 0;"><b>🕒 Waktu Pemblokiran:</b> {waktu_serangan}</p>
-                                <p style="margin: 6px 0;"><b>🌐 IP yang Diblokir:</b> <span style="font-family: monospace; background-color: #f0f0f0; padding: 2px 6px;">{src_ip}</span></p>
-                                <p style="margin: 6px 0;"><b>📡 Protokol Serangan:</b> {protocol}</p>
-                                <p style="margin: 6px 0;"><b>📊 Total Paket Serangan:</b> {count} paket</p>
-                                <p style="margin: 6px 0;"><b>⚙️ Laju Paket:</b> {rate:.0f} pps (paket per detik)</p>
-                            </div>
-
-                            <div style="margin-top: 20px; background-color: #f9f9f9; border: 1px solid #ddd; padding: 15px 20px; border-radius: 8px;">
-                                <p style="margin: 0; font-size: 14px; color: #555;"><b>📌 Metode Pemblokiran yang Digunakan:</b></p>
-                                <ul style="margin: 10px 0; padding-left: 20px;">
-                                    <li>MikroTik Address List (blacklist)</li>
-                                    <li>Firewall Filter Rules (INPUT & FORWARD)</li>
-                                </ul>
-                            </div>
-
-                            <div style="margin-top: 20px; background-color: #f0f8ff; border: 1px solid #b3d9ff; padding: 15px 20px; border-radius: 8px;">
-                                <p style="margin: 0; font-size: 14px; color: #004085;"><b>🖥️ Lokasi Router:</b></p>
-                                <p style="margin: 5px 0; font-family: monospace;">{router_name} ({router_ip})</p>
-                            </div>
-
-                            <div style="margin-top: 25px; background-color: #e8f5e9; border: 1px solid #c8e6c9; padding: 15px 20px; border-radius: 8px;">
-                                <p style="margin: 0; font-size: 15px; color: #2e7d32;">
-                                    ✅ Akses telah <b>berhasil diblokir</b> dan jaringan {router_name} terlindungi dari ancaman ini.
-                                </p>
-                            </div>
-
-                            <div style="margin-top: 30px; text-align: center; color: #555555; font-size: 14px;">
-                                <p style="margin: 0;"><i>— Sistem Hybrid AI Detector</i></p>
-                                <p style="margin: 0;"><i>{router_name}</i></p>
-                            </div>
-                        </div>
-
-                    </body>
-                    </html>
-                    """
-
-                    for target in wa_targets:
-                        Message(target, wa_block_message).send_via_whatsapp()
-                        print(Fore.GREEN + f"# Notifikasi Pemblokiran WhatsApp Dikirim" + Style.RESET_ALL)
-
-                    for receiver in email_receivers:
-                        Message(receiver, block_email_body, "🔒 Notifikasi Pemblokiran Akses Pengguna - RSUD Tapan").send_via_email()
-                        print(Fore.YELLOW + f"# Notifikasi Pemblokiran Email Dikirim" + Style.RESET_ALL)
-
-                    print(Fore.CYAN + f"# Notifikasi pemblokiran berhasil dikirim." + Style.RESET_ALL)
-
-                except Exception as e:
-                    print(Fore.RED + f"# Gagal mengirim notifikasi pemblokiran: {e}" + Style.RESET_ALL)
-
                 self._block_ip(src_ip)
                 final_label = "DDOS-Attack"
+                try:
+                        waktu_serangan = datetime.now().strftime("%d %B %Y %H:%M:%S")
+
+                        wa_targets = [
+                            "6285835524290",
+                        ]
+
+                        email_receivers = [
+                            "liando1804@gmail.com",
+                        ]
+
+                        router_ip = self.mt_host or ""
+                        router_name = "Router MikroTik RSUD Tapan"
+
+                        wa_message = (
+                            f"🚨 *PERINGATAN SERANGAN DDOS TERDETEKSI* 🚨\n\n"
+                            f"🏥 *{router_name} ({router_ip})*\n"
+                            f"🕒 *Waktu Serangan:* {waktu_serangan}\n"
+                            f"🌐 *IP Penyerang:* {src_ip}\n"
+                            f"📡 *Protokol:* {protocol}\n"
+                            f"📦 *Rata-rata Paket:* {avg_len}\n"
+                            f"⚙️ *Tingkat Lalu Lintas:* {rate:.0f}\n"
+                            f"📊 *Jumlah Paket:* {count}\n"
+                            f"🔁 *IP TTL:* {ttl}\n\n"
+                            f"🛑 IP {src_ip} telah *diblokir otomatis* untuk menjaga kestabilan jaringan *{router_name}*.\n"
+                            f"Terima kasih.\n\n"
+                            f"— Sistem Hybrid AI Detector"
+                        )
+
+                        for target in wa_targets:
+                            Message(target, wa_message).send_via_whatsapp()
+                            print(Fore.GREEN + f"# Pesan WhatsApp Dikirim" + Style.RESET_ALL)
+
+                        subject = f"🚨 Peringatan Serangan DDoS di {router_name}"
+
+                        email_body = f"""
+                        <html>
+                        <body style="font-family: 'Segoe UI', Arial, sans-serif; background-color: #f4f6f8; padding: 30px;">
+                            <div style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
+                                <div style="text-align: center; margin-bottom: 20px;">
+                                    <div style="background-color: #d9534f; color: white; display: inline-block; padding: 10px 20px; border-radius: 8px; font-size: 18px; font-weight: bold;">
+                                        🚨 Peringatan Serangan DDoS
+                                    </div>
+                                </div>
+
+                                <p style="font-size: 15px; color: #333333; text-align: justify;">
+                                    Telah terdeteksi aktivitas mencurigakan pada sistem jaringan 
+                                    <b>{router_name}</b> dengan IP <b>{router_ip}</b>.
+                                    Berikut detail hasil analisis otomatis sistem:
+                                </p>
+
+                                <div style="background-color: #f9f9f9; border-left: 5px solid #d9534f; padding: 15px 20px; border-radius: 8px; margin-top: 15px;">
+                                    <p style="margin: 6px 0;"><b>🕒 Waktu Deteksi:</b> {waktu_serangan}</p>
+                                    <p style="margin: 6px 0;"><b>🌐 IP Penyerang:</b> {src_ip}</p>
+                                    <p style="margin: 6px 0;"><b>📡 Protokol:</b> {protocol}</p>
+                                    <p style="margin: 6px 0;"><b>📦 Rata-rata Panjang Paket:</b> {avg_len}</p>
+                                    <p style="margin: 6px 0;"><b>⚙️ Tingkat Lalu Lintas:</b> {rate:.0f}</p>
+                                    <p style="margin: 6px 0;"><b>📊 Jumlah Paket:</b> {count}</p>
+                                    <p style="margin: 6px 0;"><b>🔁 IP TTL:</b> {ttl}</p>
+                                </div>
+
+                                <div style="margin-top: 25px; background-color: #fff3f3; border: 1px solid #f5c6cb; padding: 15px 20px; border-radius: 8px;">
+                                    <p style="margin: 0; font-size: 15px; color: #b71c1c;">
+                                        ⚠️ IP <b>{src_ip}</b> telah <b>diblokir otomatis</b> oleh sistem AI pada <b>{router_name}</b> ({router_ip}).
+                                    </p>
+                                </div>
+
+                                <div style="margin-top: 30px; text-align: center; color: #555555; font-size: 14px;">
+                                    <p style="margin: 0;"><i>— Sistem Hybrid AI Detector</i></p>
+                                    <p style="margin: 0;"><i>{router_name}</i></p>
+                                </div>
+                            </div>
+                        </body>
+                        </html>
+                        """
+
+                        for receiver in email_receivers:
+                            Message(receiver, email_body, subject).send_via_email()
+                            print(Fore.YELLOW + f"# Pesan Email Dikirim" + Style.RESET_ALL)
+
+                        print(Fore.CYAN + f"# Notifikasi berhasil dikirim ke WhatsApp & Email." + Style.RESET_ALL)
+
+                except Exception as e:
+                        print(Fore.RED + f"# Gagal mengirim notifikasi: {e}" + Style.RESET_ALL)
 
             now = time.time()
             if final_label == "DDOS-Attack":
@@ -642,6 +563,7 @@ class HybridDDoSDetector:
                     if current_time - self._get_last_seen_time(key[0]) > max_age:
                         del self.state_memory[key]
                 
+                # Clean last_attack_time
                 for key in list(self.last_attack_time.keys()):
                     if current_time - self.last_attack_time[key] > max_age:
                         del self.last_attack_time[key]
@@ -660,7 +582,7 @@ class HybridDDoSDetector:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Hybrid DDoS Detector (TZSP-ready)")
     parser.add_argument('--interface', '-i', default='any', help='Interface for tshark (default any)')
-    parser.add_argument('--model', '-m', default='model/result/model/ddos_model.pkl', help='Path to ML model')
+    parser.add_argument('--model', '-m', default='model/result/ddos_model.pkl', help='Path to ML model')
     parser.add_argument('--no-iptables', action='store_true', help='Disable iptables blocking')
     parser.add_argument('--no-blackhole', action='store_true', help='Disable blackhole route')
     
