@@ -20,7 +20,6 @@ import json
 from messages.message import Message
 from datetime import datetime
 
-
 class HybridDDoSDetector:
     def __init__(self, interface='enp0s8', model_path='model/result/model/ddos_model.pkl',
                  iptables_enabled=True, blackhole_enabled=True):
